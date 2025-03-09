@@ -28,8 +28,10 @@ contract RewardsDistributionDistributeTest is RewardsDistributionTest {
   function test_RevertsIf_SomeBlocksSkipped() public {
     (uint256[] memory recipients, uint256[] memory workerAmounts, uint256[] memory stakerAmounts) = prepareRewards(2);
     rewardsDistribution.distributeHelper(1, recipients, workerAmounts, stakerAmounts);
+    assertEq(rewardsDistribution.commitmentsDistributed(1, 2), 1);
     vm.expectRevert("Not all blocks covered");
     rewardsDistribution.distributeHelper(4, recipients, workerAmounts, stakerAmounts);
+    assertEq(rewardsDistribution.commitmentsDistributed(1, 2), 1);
   }
 
   function testIncreasesClaimableAmount() public {

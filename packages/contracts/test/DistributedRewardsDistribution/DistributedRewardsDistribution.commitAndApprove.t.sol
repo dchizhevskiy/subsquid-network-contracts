@@ -174,6 +174,64 @@ contract RewardsDistributionCommitApproveTest is RewardsDistributionTest {
     rewardsDistribution.commit(1, 4, recipients, workerAmounts, stakerAmounts);
   }
 
+  function test_ItIsPossibleToApproveWithCommitWithTwoCommits() public {
+    (uint256[] memory recipients, uint256[] memory workerAmounts, uint256[] memory stakerAmounts) = prepareRewards(3);
+    (uint256[] memory recipients2, uint256[] memory workerAmounts2, uint256[] memory stakerAmounts2) = prepareRewards(5);
+    rewardsDistribution.addDistributor(address(1));
+    rewardsDistribution.addDistributor(address(2));
+    rewardsDistribution.setApprovesRequired(3);
+    rewardsDistribution.setWindowSize(3);
+    waitUntilDistributor();
+    rewardsDistribution.commit(1, 4, recipients, workerAmounts, stakerAmounts);
+    rewardsDistribution.commit(1, 4, recipients2, workerAmounts2, stakerAmounts2);
+    hoax(address(1));
+    rewardsDistribution.commit(1, 4, recipients, workerAmounts, stakerAmounts);
+    hoax(address(1));
+    rewardsDistribution.commit(1, 4, recipients2, workerAmounts2, stakerAmounts2);
+    hoax(address(2));
+    vm.expectEmit(address(rewardsDistribution));
+    emit Distributed(1, 4, recipients, workerAmounts, stakerAmounts);
+    rewardsDistribution.commit(1, 4, recipients, workerAmounts, stakerAmounts);
+    assertEq(rewardsDistribution.commitmentsDistributed(1, 4), 1);
+    assertEq(rewardsDistribution.lastBlockRewarded(), 0);
+    hoax(address(2));
+    vm.expectEmit(address(rewardsDistribution));
+    emit Distributed(1, 4, recipients2, workerAmounts2, stakerAmounts2);
+    rewardsDistribution.commit(1, 4, recipients2, workerAmounts2, stakerAmounts2);
+    assertEq(rewardsDistribution.commitmentsDistributed(1, 4), 2);
+    assertEq(rewardsDistribution.lastBlockRewarded(), 4);
+  }
+
+  function test_ShouldFailWhenNotAllCommitsDelivered() public {
+    (uint256[] memory recipients, uint256[] memory workerAmounts, uint256[] memory stakerAmounts) = prepareRewards(3);
+    (uint256[] memory recipients2, uint256[] memory workerAmounts2, uint256[] memory stakerAmounts2) = prepareRewards(5);
+    (uint256[] memory recipients3, uint256[] memory workerAmounts3, uint256[] memory stakerAmounts3) = prepareRewards(6);
+    rewardsDistribution.addDistributor(address(1));
+    rewardsDistribution.addDistributor(address(2));
+    rewardsDistribution.addDistributor(address(3));
+    rewardsDistribution.setApprovesRequired(3);
+    rewardsDistribution.setWindowSize(3);
+    waitUntilDistributor();
+    rewardsDistribution.commit(1, 4, recipients, workerAmounts, stakerAmounts);
+    rewardsDistribution.commit(1, 4, recipients2, workerAmounts2, stakerAmounts2);
+    rewardsDistribution.commit(5, 6, recipients3, workerAmounts3, stakerAmounts3);
+    hoax(address(1));
+    rewardsDistribution.commit(1, 4, recipients, workerAmounts, stakerAmounts);
+    hoax(address(1));
+    rewardsDistribution.commit(1, 4, recipients2, workerAmounts2, stakerAmounts2);
+    hoax(address(2));
+    vm.expectEmit(address(rewardsDistribution));
+    emit Distributed(1, 4, recipients, workerAmounts, stakerAmounts);
+    rewardsDistribution.commit(1, 4, recipients, workerAmounts, stakerAmounts);
+    assertEq(rewardsDistribution.commitmentsDistributed(1, 4), 1);
+    assertEq(rewardsDistribution.lastBlockRewarded(), 0);
+    hoax(address(1));
+    rewardsDistribution.commit(5, 6, recipients3, workerAmounts3, stakerAmounts3);
+    hoax(address(2));
+    vm.expectRevert("Not all blocks covered");
+    rewardsDistribution.commit(5, 6, recipients3, workerAmounts3, stakerAmounts3);
+  }
+
   function waitUntilDistributor() internal {
     vm.roll(block.number + 256);
     while (!rewardsDistribution.canCommit(address(this))) {

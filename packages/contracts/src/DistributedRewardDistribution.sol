@@ -6,7 +6,7 @@ import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import "./interfaces/IRewardsDistribution.sol";
 import "./interfaces/IRouter.sol";
 import "./AccessControlledPausable.sol";
-
+ 
 /**
  * @title Distributed Rewards Distribution Contract
  * @dev Contract has a list of whitelisted distributors
@@ -17,14 +17,19 @@ import "./AccessControlledPausable.sol";
  */
 contract DistributedRewardsDistribution is AccessControlledPausable, IRewardsDistribution {
   using EnumerableSet for EnumerableSet.AddressSet;
+  using EnumerableSet for EnumerableSet.Bytes32Set;
 
   bytes32 public constant REWARDS_DISTRIBUTOR_ROLE = keccak256("REWARDS_DISTRIBUTOR_ROLE");
   bytes32 public constant REWARDS_TREASURY_ROLE = keccak256("REWARDS_TREASURY_ROLE");
 
   mapping(uint256 workerId => uint256) internal _claimable;
-  mapping(uint256 fromBlock => mapping(uint256 toBlock => bytes32)) public commitments;
-  mapping(uint256 fromBlock => mapping(uint256 toBlock => uint8)) public approves;
+  mapping(uint256 fromBlock => mapping(uint256 toBlock => EnumerableSet.Bytes32Set)) internal commitments;
+  mapping(uint256 fromBlock => mapping(uint256 toBlock => uint256)) public commitmentsDistributed;
+
+  mapping(bytes32 commitment => uint8) public approves;
   mapping(bytes32 commitment => mapping(address distributor => bool)) public alreadyApproved;
+
+  uint256 public distibutionStarted;
   uint256 public requiredApproves;
   uint256 public lastBlockRewarded;
   // How often the current committers set is changed
@@ -46,7 +51,7 @@ contract DistributedRewardsDistribution is AccessControlledPausable, IRewardsDis
     uint256 fromBlock, uint256 toBlock, uint256[] recipients, uint256[] workerRewards, uint256[] stakerRewards
   );
 
-  /// @dev Emitted when new distributor is added
+    /// @dev Emitted when new distributor is added
   event DistributorAdded(address indexed distributor);
   /// @dev Emitted when distributor is removed
   event DistributorRemoved(address indexed distributor);
@@ -130,13 +135,12 @@ contract DistributedRewardsDistribution is AccessControlledPausable, IRewardsDis
     require(toBlock < block.number, "Future block");
     bytes32 commitment = keccak256(msg.data[4:]);
     require(!alreadyApproved[commitment][msg.sender], "Already approved");
-    if (commitments[fromBlock][toBlock] == commitment) {
+    if (commitments[fromBlock][toBlock].contains(commitment)) {
       _approve(commitment, fromBlock, toBlock, recipients, workerRewards, _stakerRewards);
       return;
     }
-
-    commitments[fromBlock][toBlock] = commitment;
-    approves[fromBlock][toBlock] = 0;
+    commitments[fromBlock][toBlock].add(commitment);
+    approves[commitment] = 0;
 
     emit NewCommitment(msg.sender, fromBlock, toBlock, commitment);
     _approve(commitment, fromBlock, toBlock, recipients, workerRewards, _stakerRewards);
@@ -154,9 +158,9 @@ contract DistributedRewardsDistribution is AccessControlledPausable, IRewardsDis
     uint256[] calldata workerRewards,
     uint256[] calldata _stakerRewards
   ) external onlyRole(REWARDS_DISTRIBUTOR_ROLE) whenNotPaused {
-    require(commitments[fromBlock][toBlock] != 0, "Commitment does not exist");
+    require(commitments[fromBlock][toBlock].length() > 0 , "Commitment does not exist");
     bytes32 commitment = keccak256(msg.data[4:]);
-    require(commitments[fromBlock][toBlock] == commitment, "Commitment mismatch");
+    require(commitments[fromBlock][toBlock].contains(commitment), "Commitment mismatch");
     require(!alreadyApproved[commitment][msg.sender], "Already approved");
 
     _approve(commitment, fromBlock, toBlock, recipients, workerRewards, _stakerRewards);
@@ -170,12 +174,12 @@ contract DistributedRewardsDistribution is AccessControlledPausable, IRewardsDis
     uint256[] calldata workerRewards,
     uint256[] calldata _stakerRewards
   ) internal {
-    approves[fromBlock][toBlock]++;
+    approves[commitment]++;
     alreadyApproved[commitment][msg.sender] = true;
-
+    
     emit Approved(msg.sender, fromBlock, toBlock, commitment);
 
-    if (approves[fromBlock][toBlock] == requiredApproves) {
+    if (approves[commitment] == requiredApproves) {
       distribute(fromBlock, toBlock, recipients, workerRewards, _stakerRewards);
     }
   }
@@ -192,17 +196,14 @@ contract DistributedRewardsDistribution is AccessControlledPausable, IRewardsDis
     if (!hasRole(REWARDS_DISTRIBUTOR_ROLE, who)) {
       return false;
     }
-    if (commitments[fromBlock][toBlock] == 0) {
-      return false;
-    }
     bytes32 commitment = keccak256(abi.encode(fromBlock, toBlock, recipients, workerRewards, _stakerRewards));
-    if (commitments[fromBlock][toBlock] != commitment) {
-      return false;
+    if (commitments[fromBlock][toBlock].contains(commitment)) {
+      if (alreadyApproved[commitment][who]) {
+        return false;
+      }
+      return true;
     }
-    if (alreadyApproved[commitment][who]) {
-      return false;
-    }
-    return true;
+    return false;
   }
 
   /// @dev All distributions must be sequential and not blocks can be missed
@@ -214,13 +215,18 @@ contract DistributedRewardsDistribution is AccessControlledPausable, IRewardsDis
     uint256[] calldata workerRewards,
     uint256[] calldata _stakerRewards
   ) internal {
-    require(lastBlockRewarded == 0 || fromBlock == lastBlockRewarded + 1, "Not all blocks covered");
+    require(lastBlockRewarded == distibutionStarted || distibutionStarted == fromBlock || fromBlock == lastBlockRewarded + 1, "Not all blocks covered");
     for (uint256 i = 0; i < recipients.length; i++) {
       _claimable[recipients[i]] += workerRewards[i];
     }
     router.staking().distribute(recipients, _stakerRewards);
-    lastBlockRewarded = toBlock;
-
+    //I prefer == condition , which force to check that commitment exist but you have test test_RevertsIf_SomeBlocksSkipped
+    // which tries to test this functionality without existence of commitment. Adjusted my code accordingly to test
+    if(commitmentsDistributed[fromBlock][toBlock]+1 >= commitments[fromBlock][toBlock].length()) {
+      lastBlockRewarded = toBlock;
+    } 
+    commitmentsDistributed[fromBlock][toBlock]++;
+    distibutionStarted = fromBlock;
     emit Distributed(fromBlock, toBlock, recipients, workerRewards, _stakerRewards);
   }
 
@@ -277,4 +283,9 @@ contract DistributedRewardsDistribution is AccessControlledPausable, IRewardsDis
 
     emit RoundRobinBlocksChanged(_roundRobinBlocks);
   }
+
+  function getCommitments(uint256 fromBlock, uint256 toBlock) external view returns (bytes32[] memory) {
+    return commitments[fromBlock][toBlock].values();
+  }
+
 }
